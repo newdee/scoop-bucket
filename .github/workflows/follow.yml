@@ -1,0 +1,131 @@
+# Each program's manifest, kept the way newdee/homebrew-tap keeps its formulas:
+#  - every 6 hours (or by hand) copy the manifest from the program's own
+#    repository, which its release workflow updates at each release;
+#  - install it with Scoop on Windows and run it; commit it only if that passes.
+# A change pushed here is checked the way a user installs: through this bucket.
+name: follow
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: unifyterm
+            source: https://raw.githubusercontent.com/newdee/unifyterm/main/packaging/scoop/unifyterm.json
+          - app: keepane
+            source: https://raw.githubusercontent.com/newdee/keepane/master/packaging/scoop/keepane.json
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Follow the program's manifest
+        id: follow
+        if: github.event_name != 'push'
+        shell: pwsh
+        run: |
+          $text = (Invoke-WebRequest '${{ matrix.source }}' -UseBasicParsing).Content
+          $version = ($text | ConvertFrom-Json).version
+          if (-not $version) { throw 'no version in ${{ matrix.source }}' }
+          [IO.File]::WriteAllText("$PWD/bucket/${{ matrix.app }}.json", $text)
+          git diff --quiet -- bucket/${{ matrix.app }}.json
+          $changed = if ($LASTEXITCODE -eq 0) { 'false' } else { 'true' }
+          "${{ matrix.app }} $version, changed: $changed"
+          "changed=$changed" >> $env:GITHUB_OUTPUT
+          New-Item -ItemType Directory -Force tested | Out-Null
+          if ($changed -eq 'true') { Copy-Item bucket/${{ matrix.app }}.json tested/ }
+
+      - name: Scoop
+        if: github.event_name == 'push' || steps.follow.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          # The runner's user is an administrator; Scoop asks to be told that is meant.
+          Invoke-Expression "& {$(Invoke-RestMethod https://get.scoop.sh)} -RunAsAdmin"
+          "$env:USERPROFILE\scoop\shims" >> $env:GITHUB_PATH
+
+      - name: Install through this bucket, as a user does
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          scoop bucket add newdee "https://github.com/${{ github.repository }}"
+          scoop install ${{ matrix.app }}
+          if ($LASTEXITCODE) { throw "scoop install ${{ matrix.app }}: exit $LASTEXITCODE" }
+
+      - name: Install the new manifest
+        if: steps.follow.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          scoop install bucket/${{ matrix.app }}.json
+          if ($LASTEXITCODE) { throw "scoop install: exit $LASTEXITCODE" }
+
+      - name: Run it
+        if: github.event_name == 'push' || steps.follow.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          $app = '${{ matrix.app }}'
+          $manifest = Get-Content "bucket/$app.json" -Raw | ConvertFrom-Json
+          $out = Join-Path $env:RUNNER_TEMP 'version.txt'
+          # Through Scoop's shim, as a user runs it (unifyterm is a window program: it prints and leaves).
+          Start-Process $app -ArgumentList '--version' -RedirectStandardOutput $out -Wait -NoNewWindow
+          $said = (Get-Content $out -Raw).Trim()
+          "$app --version: $said"
+          if ($said -notmatch "(^|\s)$([regex]::Escape($manifest.version))(\s|$)") { throw "expected version $($manifest.version)" }
+          if ($app -eq 'unifyterm') {
+            $cat = 'hi' | ut cat
+            if ($cat -ne 'hi') { throw "ut cat printed '$cat'" }
+          }
+          foreach ($shortcut in @($manifest.shortcuts)) {
+            if (-not $shortcut) { continue }
+            $link = Join-Path ([Environment]::GetFolderPath('Programs')) "Scoop Apps\$($shortcut[1]).lnk"
+            if (-not (Test-Path $link)) { throw "no Start menu item at $link" }
+          }
+          scoop uninstall $app
+          if (Get-Command $app -ErrorAction SilentlyContinue) { throw "$app is still on PATH after uninstall" }
+          "installed, ran, and uninstalled $app $($manifest.version)"
+
+      - uses: actions/upload-artifact@v4
+        if: steps.follow.outputs.changed == 'true'
+        with:
+          name: tested-${{ matrix.app }}
+          path: tested/${{ matrix.app }}.json
+
+  publish:
+    needs: test
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: tested
+          pattern: tested-*
+          merge-multiple: true
+      - name: Commit the manifests that were tested
+        run: |
+          shopt -s nullglob
+          tested=(tested/*.json)
+          if [ ${#tested[@]} -eq 0 ]; then echo "nothing new"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          message=""
+          for file in "${tested[@]}"; do
+            app=$(basename "$file" .json)
+            cp "$file" "bucket/$app.json"
+            version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$file" | head -n 1)
+            message="$message${message:+, }$app $version"
+          done
+          git add bucket
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -m "$message"
+          git pull --rebase origin main
+          git push origin HEAD:main
