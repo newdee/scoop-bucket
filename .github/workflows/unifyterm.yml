@@ -1,0 +1,105 @@
+# unifyterm's manifest, kept the way newdee/homebrew-tap keeps its formula:
+#  - every 6 hours (or by hand) copy the manifest from unifyterm's repository,
+#    which unifyterm's release workflow updates at each release;
+#  - install it with Scoop on Windows and run it; commit it only if that passes.
+# A change pushed here is checked the way a user installs: through this bucket.
+name: unifyterm
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: windows-latest
+    outputs:
+      changed: ${{ steps.follow.outputs.changed }}
+      version: ${{ steps.follow.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Follow unifyterm's manifest
+        id: follow
+        if: github.event_name != 'push'
+        shell: pwsh
+        run: |
+          $source = 'https://raw.githubusercontent.com/newdee/unifyterm/main/packaging/scoop/unifyterm.json'
+          $text = (Invoke-WebRequest $source -UseBasicParsing).Content
+          $version = ($text | ConvertFrom-Json).version
+          if (-not $version) { throw "no version in $source" }
+          [IO.File]::WriteAllText("$PWD/bucket/unifyterm.json", $text)
+          git diff --quiet -- bucket/unifyterm.json
+          $changed = if ($LASTEXITCODE -eq 0) { 'false' } else { 'true' }
+          "manifest $version, changed: $changed"
+          "changed=$changed" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Scoop
+        if: github.event_name == 'push' || steps.follow.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          # The runner's user is an administrator; Scoop asks to be told that is meant.
+          Invoke-Expression "& {$(Invoke-RestMethod https://get.scoop.sh)} -RunAsAdmin"
+          "$env:USERPROFILE\scoop\shims" >> $env:GITHUB_PATH
+
+      - name: Install through this bucket, as a user does
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          scoop bucket add newdee "https://github.com/${{ github.repository }}"
+          scoop install unifyterm
+          if ($LASTEXITCODE) { throw "scoop install unifyterm: exit $LASTEXITCODE" }
+
+      - name: Install the new manifest
+        if: steps.follow.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          scoop install bucket/unifyterm.json
+          if ($LASTEXITCODE) { throw "scoop install: exit $LASTEXITCODE" }
+
+      - name: Run it
+        if: github.event_name == 'push' || steps.follow.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          $want = (Get-Content bucket/unifyterm.json -Raw | ConvertFrom-Json).version
+          $out = Join-Path $env:RUNNER_TEMP 'version.txt'
+          # The window program prints its version and leaves; through Scoop's shim, as a user runs it.
+          Start-Process unifyterm -ArgumentList '--version' -RedirectStandardOutput $out -Wait -NoNewWindow
+          $said = (Get-Content $out -Raw).Trim()
+          "unifyterm --version: $said"
+          if ($said -notlike "UnifyTerm $want *") { throw "expected UnifyTerm $want" }
+          $ut = ut --version
+          "ut --version: $ut"
+          if ($ut -notlike "ut $want *") { throw "expected ut $want" }
+          $cat = 'hi' | ut cat
+          if ($cat -ne 'hi') { throw "ut cat printed '$cat'" }
+          $start = Join-Path ([Environment]::GetFolderPath('Programs')) 'Scoop Apps\UnifyTerm.lnk'
+          if (-not (Test-Path $start)) { throw "no Start menu item at $start" }
+          scoop uninstall unifyterm
+          if (Get-Command unifyterm -ErrorAction SilentlyContinue) { throw 'unifyterm is still on PATH after uninstall' }
+          "installed, ran, and uninstalled $want"
+
+  publish:
+    needs: test
+    if: needs.test.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Commit the manifest that was tested
+        run: |
+          curl -fsSL -o bucket/unifyterm.json https://raw.githubusercontent.com/newdee/unifyterm/main/packaging/scoop/unifyterm.json
+          version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' bucket/unifyterm.json | head -n 1)
+          if [ "$version" != "${{ needs.test.outputs.version }}" ]; then
+            echo "unifyterm's manifest moved on to $version while ${{ needs.test.outputs.version }} was tested: the next run takes it"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "unifyterm $version"
+          git push origin HEAD:main
