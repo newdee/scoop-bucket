@@ -44,6 +44,8 @@ jobs:
           "changed=$changed" >> $env:GITHUB_OUTPUT
           New-Item -ItemType Directory -Force tested | Out-Null
           if ($changed -eq 'true') { Copy-Item bucket/${{ matrix.app }}.json tested/ }
+          # git diff's 1 (there is a change) is an answer, not a failure: the step's own result is set here.
+          $global:LASTEXITCODE = 0
 
       - name: Scoop
         if: github.event_name == 'push' || steps.follow.outputs.changed == 'true'
