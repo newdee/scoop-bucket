@@ -67,7 +67,8 @@ jobs:
         if: steps.follow.outputs.changed == 'true'
         shell: pwsh
         run: |
-          scoop install bucket/${{ matrix.app }}.json
+          # A full path: scoop reads "bucket/name.json" as the app name.json of a bucket called bucket.
+          scoop install (Join-Path $PWD 'bucket\${{ matrix.app }}.json')
           if ($LASTEXITCODE) { throw "scoop install: exit $LASTEXITCODE" }
 
       - name: Run it
