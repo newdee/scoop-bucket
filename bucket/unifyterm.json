@@ -1,13 +1,13 @@
 {
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "One terminal for Windows, macOS and Linux: the same Unix commands everywhere, a command history you can search as you type.",
   "homepage": "https://github.com/newdee/unifyterm",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/newdee/unifyterm/releases/download/v0.9.5/unifyterm-v0.9.5-windows-x86_64.zip",
-      "hash": "59414ce901861b147a1eb8ad16a7afbcd2733ef47da0fc24570f58521c2ec85a",
-      "extract_dir": "unifyterm-v0.9.5-windows-x86_64"
+      "url": "https://github.com/newdee/unifyterm/releases/download/v0.9.6/unifyterm-v0.9.6-windows-x86_64.zip",
+      "hash": "c1af896207aebae864624db7ff7cc1c46e8c41acf68dce2b46bf05641821749d",
+      "extract_dir": "unifyterm-v0.9.6-windows-x86_64"
     }
   },
   "bin": [
